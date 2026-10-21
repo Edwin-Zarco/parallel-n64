@@ -1,0 +1,103 @@
+# Save as: .github/workflows/android-armv7.yml
+#
+# Proof-of-concept build of parallel-n64 for Xperia Play (Android 4.0.4,
+# ARMv7 + NEON, Adreno 205 / GLES 2.0 only) using NDK r23c.
+#
+# Follows the project's official Android build (libretro's android-jni
+# template): `cd jni && ndk-build`. Only the overrides needed for this device
+# are passed on the command line, so no source files are modified.
+
+name: Android armeabi-v7a (Xperia Play POC)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      dynarec:
+        description: "CPU core: arm = ARM dynarec, none = pure interpreter (use if dynarec crashes)"
+        type: choice
+        options: [arm, none]
+        default: arm
+
+env:
+  NDK_VERSION: r23c
+  # r23c's lowest supported platform is android-16 (Android 4.1).
+  # Android 4.0.4 is API 15, so this is the closest target r23c can link to.
+  APP_PLATFORM: android-16
+  APP_ABI: armeabi-v7a
+  DYNAREC: ${{ inputs.dynarec || 'arm' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Cache NDK ${{ env.NDK_VERSION }}
+        id: ndk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/android-ndk-${{ env.NDK_VERSION }}
+          key: ndk-${{ env.NDK_VERSION }}-linux
+
+      - name: Download NDK ${{ env.NDK_VERSION }}
+        if: steps.ndk-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o /tmp/ndk.zip \
+            "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          unzip -q /tmp/ndk.zip -d "$HOME"
+          rm /tmp/ndk.zip
+
+      - name: Set NDK path
+        run: |
+          echo "ANDROID_NDK_HOME=$HOME/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Build (ndk-build)
+        working-directory: jni
+        run: |
+          # Overrides vs. the stock jni/Android.mk defaults:
+          #  HAVE_PARALLEL=0      ParaLLEl-RDP needs Vulkan (API 24+)
+          #  HAVE_PARALLEL_RSP=0  its JIT RSP only has an x86_64 backend
+          #  GLES stays 1 / GLES3 unset -> GLES2 path; the Makefile
+          #       automatically disables GLideN64 (needs GLES 3.x), leaving
+          #       gln64 / rice / glide64 (+ angrylion software RDP)
+          #  --hash-style=both    Android 4.0's linker has no DT_GNU_HASH
+          if [ "$DYNAREC" = "none" ]; then DYN=""; else DYN="$DYNAREC"; fi
+
+          "$ANDROID_NDK_HOME/ndk-build" -j"$(nproc)" \
+            APP_ABI="$APP_ABI" \
+            APP_PLATFORM="$APP_PLATFORM" \
+            APP_LDFLAGS="-Wl,--hash-style=both" \
+            HAVE_PARALLEL=0 \
+            HAVE_PARALLEL_RSP=0 \
+            WITH_DYNAREC="$DYN"
+
+      - name: Verify and package
+        run: |
+          READELF="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          SO="libs/${APP_ABI}/libretro.so"
+          ls -l "$SO"
+
+          echo "--- dynamic section ---"
+          "$READELF" -d "$SO" | grep -E "NEEDED|HASH|SONAME" || true
+
+          # Android 4.0 cannot load a library that only has DT_GNU_HASH
+          "$READELF" -d "$SO" | grep -q "(HASH)" \
+            || { echo "::error::No DT_HASH; Android 4.0 linker will refuse this .so"; exit 1; }
+
+          echo "--- undefined symbols (informational) ---"
+          "$READELF" --dyn-syms "$SO" | awk '$7=="UND" && $8!=""{print $8}' | sort -u | head -150
+
+          mkdir -p dist
+          cp "$SO" dist/parallel_n64_libretro_android.so
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: parallel_n64_libretro_android-armv7-${{ env.DYNAREC }}
+          path: dist/parallel_n64_libretro_android.so
+          if-no-files-found: error
