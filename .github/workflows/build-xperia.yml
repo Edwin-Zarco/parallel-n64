@@ -56,6 +56,35 @@ jobs:
         run: |
           echo "ANDROID_NDK_HOME=$HOME/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
 
+      - name: Create libc compat shim (API < 21)
+        run: |
+          # Bionic gained posix_fadvise, posix_fallocate and stpcpy in API 21.
+          # Linking against android-16 leaves them undefined, so provide
+          # equivalents via a force-included header (no source changes).
+          cat > "$RUNNER_TEMP/compat_api16.h" <<'EOF'
+          #ifndef COMPAT_API16_H
+          #define COMPAT_API16_H
+          #if defined(__ANDROID__) && __ANDROID_API__ < 21
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+          /* Both are only optimisation hints / preallocation in the VFS copy path. */
+          #define posix_fadvise(fd, off, len, adv) ((void)(fd), (void)(off), (void)(len), (void)(adv), 0)
+          #define posix_fallocate(fd, off, len)    ((void)(fd), (void)(off), (void)(len), 0)
+          static inline char *compat_stpcpy(char *d, const char *s)
+          {
+             while ((*d = *s++)) d++;
+             return d;
+          }
+          #define stpcpy compat_stpcpy
+          #ifdef __cplusplus
+          }
+          #endif
+          #endif
+          #endif
+          EOF
+          cat "$RUNNER_TEMP/compat_api16.h"
+
       - name: Build (ndk-build)
         working-directory: jni
         run: |
@@ -71,6 +100,7 @@ jobs:
           "$ANDROID_NDK_HOME/ndk-build" -j"$(nproc)" \
             APP_ABI="$APP_ABI" \
             APP_PLATFORM="$APP_PLATFORM" \
+            APP_CFLAGS="-include $RUNNER_TEMP/compat_api16.h" \
             APP_LDFLAGS="-Wl,--hash-style=both" \
             HAVE_PARALLEL=0 \
             HAVE_PARALLEL_RSP=0 \
