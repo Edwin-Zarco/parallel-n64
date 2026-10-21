@@ -33,13 +33,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
       - name: Cache NDK ${{ env.NDK_VERSION }}
         id: ndk-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/android-ndk-${{ env.NDK_VERSION }}
           key: ndk-${{ env.NDK_VERSION }}-linux
@@ -71,12 +71,15 @@ jobs:
           /* Both are only optimisation hints / preallocation in the VFS copy path. */
           #define posix_fadvise(fd, off, len, adv) ((void)(fd), (void)(off), (void)(len), (void)(adv), 0)
           #define posix_fallocate(fd, off, len)    ((void)(fd), (void)(off), (void)(len), 0)
-          static inline char *compat_stpcpy(char *d, const char *s)
+          /* clang itself rewrites strcpy()+strlen() into stpcpy() calls, so the
+             symbol is referenced even though no source calls it by name. We
+             disable that (-fno-builtin-stpcpy) and also supply a weak real
+             definition as a fallback. */
+          __attribute__((weak, noinline)) char *stpcpy(char *d, const char *s)
           {
              while ((*d = *s++)) d++;
              return d;
           }
-          #define stpcpy compat_stpcpy
           #ifdef __cplusplus
           }
           #endif
@@ -100,7 +103,7 @@ jobs:
           "$ANDROID_NDK_HOME/ndk-build" -j"$(nproc)" \
             APP_ABI="$APP_ABI" \
             APP_PLATFORM="$APP_PLATFORM" \
-            APP_CFLAGS="-include $RUNNER_TEMP/compat_api16.h" \
+            APP_CFLAGS="-include $RUNNER_TEMP/compat_api16.h -fno-builtin-stpcpy" \
             APP_LDFLAGS="-Wl,--hash-style=both" \
             HAVE_PARALLEL=0 \
             HAVE_PARALLEL_RSP=0 \
@@ -126,7 +129,7 @@ jobs:
           cp "$SO" dist/parallel_n64_libretro_android.so
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: parallel_n64_libretro_android-armv7-${{ env.DYNAREC }}
           path: dist/parallel_n64_libretro_android.so
