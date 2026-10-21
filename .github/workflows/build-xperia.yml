@@ -64,7 +64,7 @@ jobs:
           cat > "$RUNNER_TEMP/compat_api16.h" <<'EOF'
           #ifndef COMPAT_API16_H
           #define COMPAT_API16_H
-          #if defined(__ANDROID__) && __ANDROID_API__ < 21
+          #if defined(__ANDROID__) && __ANDROID_API__ < 21 && !defined(__ASSEMBLER__)
           #ifdef __cplusplus
           extern "C" {
           #endif
